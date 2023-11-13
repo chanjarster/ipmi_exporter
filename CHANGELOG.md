@@ -1,11 +1,15 @@
 ## next
 
+## 1.7.0-mod.0 / 2023-11-13
+
+* Make mod version
+
 ## 1.7.0 / 2023-10-18
 
 * Update common files
 * Update build
 * Update golang to 1.21
-* Update dependecies
+* Update dependencies
 * Switch to Alpine-based Docker image
 * Add missing error handling
 * Added chassis cooling fault and drive fault metrics
