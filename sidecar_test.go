@@ -149,10 +149,23 @@ modules:
 		cmd := &UpdateConfigCmd{
 			Yaml: `
 modules:
-  http_2xx:
-    prober: http
-    http:
-      preferred_ip_protocol: "ip4"
+  default:
+    user: "default_user"
+    pass: "example_pw"
+    driver: "LAN_2_0"
+    privilege: "user"
+    timeout: 10000
+    collectors:
+    - bmc
+    - ipmi
+    - chassis
+    exclude_sensor_ids:
+    - 2
+    - 29
+    - 32
+    - 50
+    - 52
+    - 55
 `,
 		}
 		// blackbox reload 时发生错误

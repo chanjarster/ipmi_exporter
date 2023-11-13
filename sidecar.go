@@ -25,7 +25,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v2"
 
 	"github.com/prometheus-community/ipmi_exporter/sidecar/errs"
 )
@@ -52,10 +52,7 @@ func (cmd *UpdateConfigCmd) Validate(logger log.Logger) errs.ValidateErrors {
 func (cmd *UpdateConfigCmd) ParseConfig() (*Config, error) {
 	var c = &Config{}
 
-	decoder := yaml.NewDecoder(strings.NewReader(cmd.Yaml))
-	decoder.KnownFields(true)
-
-	if err := decoder.Decode(c); err != nil {
+	if err := yaml.Unmarshal([]byte(cmd.Yaml), c); err != nil {
 		return nil, fmt.Errorf("error parsing config file: %s", err)
 	}
 	return c, nil
