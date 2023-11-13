@@ -165,6 +165,12 @@ func main() {
             </html>`))
 	})
 
+	// EXTENSION: sidecar API
+	sidecarSvc := NewSidecarSvc(log.With(logger, "component", "sidecar"), *configFile)
+	sidecarHandler := NewSidecarHandler(log.With(logger, "handler", "sidecar"), sidecarSvc, reloadCh)
+	http.HandleFunc("/-/sidecar/config", sidecarHandler.UpdateConfig)
+	http.HandleFunc("/-/sidecar/last-update-ts", sidecarHandler.GetLastUpdateTs)
+
 	srv := &http.Server{}
 	if err := web.ListenAndServe(srv, webConfig, logger); err != nil {
 		level.Error(logger).Log("msg", "HTTP listener stopped", "error", err)
