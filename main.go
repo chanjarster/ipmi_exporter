@@ -168,8 +168,9 @@ func main() {
 	// EXTENSION: sidecar API
 	sidecarSvc := NewSidecarSvc(log.With(logger, "component", "sidecar"), *configFile)
 	sidecarHandler := NewSidecarHandler(log.With(logger, "handler", "sidecar"), sidecarSvc, reloadCh)
-	http.HandleFunc("/-/sidecar/config", sidecarHandler.UpdateConfig)
-	http.HandleFunc("/-/sidecar/last-update-ts", sidecarHandler.GetLastUpdateTs)
+	http.HandleFunc("/-/sidecar/config", sidecarHandler.UpdateConfig())
+	http.HandleFunc("/-/sidecar/runtimeinfo", sidecarHandler.GetRuntimeInfo())
+	http.HandleFunc("/-/sidecar/reset-config", sidecarHandler.ResetConfig())
 
 	srv := &http.Server{}
 	if err := web.ListenAndServe(srv, webConfig, logger); err != nil {

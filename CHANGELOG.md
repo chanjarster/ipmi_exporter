@@ -1,5 +1,9 @@
 ## next
 
+## 1.7.0-mod.2 / 2023-12-13
+
+* Add enhanced management API
+
 ## 1.7.0-mod.1 / 2023-11-13
 
 * Add enhanced management API

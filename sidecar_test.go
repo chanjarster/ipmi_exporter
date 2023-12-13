@@ -27,17 +27,11 @@ import (
 )
 
 func Test_sidecarService_UpdateConfigReload(t *testing.T) {
-	testDir, err := os.MkdirTemp("", "prom-config")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
+	testDir := t.TempDir()
 	fmt.Println("test dir:", testDir)
-	defer os.RemoveAll(testDir)
 
 	configFile := filepath.Join(testDir, "ipmi.yml")
-	templateConfigYaml, err := os.ReadFile(filepath.Join("test-data", "ipmi.yml"))
+	templateConfigYaml, err := os.ReadFile("ipmi_local.yml")
 	if err != nil {
 		t.Error(err)
 		return
@@ -55,11 +49,79 @@ func Test_sidecarService_UpdateConfigReload(t *testing.T) {
 		configFile: configFile,
 	}
 
-	require.Equal(t, time.Time{}, s.GetLastUpdateTs(), "should not be updated")
+	rt := s.GetRuntimeInfo()
+	require.Equal(t, brand, rt.Brand)
+	require.Equal(t, "", rt.ZoneId)
+	require.Equal(t, time.Time{}, rt.LastUpdateTs)
 
-	t.Run("success", func(t *testing.T) {
+	cmd := &UpdateConfigCmd{
+		ZoneId: "default",
+		Yaml: `
+modules:
+  default:
+    user: "default_user"
+    pass: "example_pw"
+    driver: "LAN_2_0"
+    privilege: "user"
+    timeout: 10000
+    collectors:
+    - bmc
+    - ipmi
+    - chassis
+    exclude_sensor_ids:
+    - 2
+    - 29
+    - 32
+    - 50
+    - 52
+    - 55
+`,
+	}
 
+	reloadCh := make(chan chan error)
+	go func() {
+		ch := <-reloadCh
+		ch <- nil
+	}()
+	require.NoError(t, s.UpdateConfigReload(context.TODO(), cmd, reloadCh))
+	rt = s.GetRuntimeInfo()
+	require.Equal(t, brand, rt.Brand)
+	require.Equal(t, cmd.ZoneId, rt.ZoneId)
+	require.NotEqual(t, time.Time{}, rt.LastUpdateTs)
+
+	// 配置文件写入了
+	configFileB, err := os.ReadFile(configFile)
+	require.NoError(t, err)
+	require.NotEqual(t, templateConfigYaml, configFileB)
+
+}
+
+func Test_sidecarService_UpdateConfigReload_ZoneIdMismatch(t *testing.T) {
+	testDir := t.TempDir()
+	fmt.Println("test dir:", testDir)
+
+	configFile := filepath.Join(testDir, "ipmi.yml")
+	templateConfigYaml, err := os.ReadFile("ipmi_local.yml")
+	require.NoError(t, err)
+
+	// 预先准备一下文件
+	err = os.WriteFile(configFile, templateConfigYaml, 0o666)
+	require.NoError(t, err)
+
+	s := &sidecarService{
+		logger:     log.NewLogfmtLogger(os.Stdout),
+		configFile: configFile,
+	}
+
+	rt := s.GetRuntimeInfo()
+	require.Equal(t, brand, rt.Brand)
+	require.Equal(t, "", rt.ZoneId)
+	require.Equal(t, time.Time{}, rt.LastUpdateTs)
+
+	{
+		// 先做一次更新
 		cmd := &UpdateConfigCmd{
+			ZoneId: "default",
 			Yaml: `
 modules:
   default:
@@ -87,22 +149,68 @@ modules:
 			ch := <-reloadCh
 			ch <- nil
 		}()
-		require.NoError(t, s.UpdateConfigReload(context.TODO(), cmd, reloadCh))
-		require.NotEqual(t, time.Time{}, s.GetLastUpdateTs(), "GetLastUpdateTs() still zero")
-	})
+		err = s.UpdateConfigReload(context.TODO(), cmd, reloadCh)
+		require.NoError(t, err)
+		rt = s.GetRuntimeInfo()
+		require.Equal(t, brand, rt.Brand)
+		require.Equal(t, "default", rt.ZoneId)
+		require.NotEqual(t, time.Time{}, rt.LastUpdateTs)
+	}
 
+	{
+		lastRt := s.GetRuntimeInfo()
+		lastConfigFileB, err := os.ReadFile(configFile)
+		require.NoError(t, err)
+
+		// 下达一个 zoneId 不匹配的指令
+		cmd2 := &UpdateConfigCmd{
+			ZoneId: "default2",
+			Yaml: `
+modules:
+  default:
+    user: "default_user"
+    pass: "example_pw"
+    driver: "LAN_2_0"
+    privilege: "user"
+    timeout: 10000
+    collectors:
+    - bmc
+    - ipmi
+    - chassis
+    exclude_sensor_ids:
+    - 2
+    - 29
+    - 32
+    - 50
+    - 52
+    - 55
+`,
+		}
+
+		reloadCh := make(chan chan error)
+		go func() {
+			ch := <-reloadCh
+			ch <- nil
+		}()
+		err = s.UpdateConfigReload(context.TODO(), cmd2, reloadCh)
+		require.Error(t, err)
+
+		thisRt := s.GetRuntimeInfo()
+		// 配置绑定 zoneId 没有变更，时间戳也没变
+		require.Equal(t, lastRt, thisRt)
+		// 配置文件也没有变更
+		thisConfigFileB, err := os.ReadFile(configFile)
+		require.NoError(t, err)
+		require.Equal(t, lastConfigFileB, thisConfigFileB)
+	}
 }
 
-func Test_sidecarService_UpdateConfigReload_FailRecover(t *testing.T) {
-
-	testDir, err := os.MkdirTemp("", "prom-config")
-	require.NoError(t, err)
-
+func Test_sidecarService_UpdateConfigReload_ErrorRestore(t *testing.T) {
+	testDir := t.TempDir()
 	fmt.Println("test dir:", testDir)
-	defer os.RemoveAll(testDir)
 
 	configFile := filepath.Join(testDir, "ipmi.yml")
-	templateConfigYaml, err := os.ReadFile("test-data/ipmi.yml")
+	templateConfigYaml, err := os.ReadFile("ipmi_local.yml")
 	require.NoError(t, err)
 
 	// 预先准备一下文件
@@ -114,18 +222,34 @@ func Test_sidecarService_UpdateConfigReload_FailRecover(t *testing.T) {
 		configFile: configFile,
 	}
 
-	require.Equal(t, time.Time{}, s.GetLastUpdateTs(), "should not be updated")
+	rt := s.GetRuntimeInfo()
+	require.Equal(t, brand, rt.Brand)
+	require.Equal(t, "", rt.ZoneId)
+	require.Equal(t, time.Time{}, rt.LastUpdateTs)
 
 	t.Run("bad yaml", func(t *testing.T) {
 
 		cmd := &UpdateConfigCmd{
 			Yaml: `
 modules:
-  http_2xx:
-    prober: http
+  default:
     blah blah
-    http:
-      preferred_ip_protocol: "ip4"
+    user: "default_user"
+    pass: "example_pw"
+    driver: "LAN_2_0"
+    privilege: "user"
+    timeout: 10000
+    collectors:
+    - bmc
+    - ipmi
+    - chassis
+    exclude_sensor_ids:
+    - 2
+    - 29
+    - 32
+    - 50
+    - 52
+    - 55
 `,
 		}
 		// parse yaml 的时候出现错误
@@ -136,9 +260,12 @@ modules:
 		}()
 		err = s.UpdateConfigReload(context.TODO(), cmd, reloadCh)
 		require.Error(t, err, "UpdateConfigReload should return err")
-		require.Equal(t, time.Time{}, s.GetLastUpdateTs(), "GetLastUpdateTs() should not be updated")
+		rt = s.GetRuntimeInfo()
+		require.Equal(t, brand, rt.Brand)
+		require.Equal(t, "", rt.ZoneId)
+		require.Equal(t, time.Time{}, rt.LastUpdateTs)
 
-		afterUpdateConfigYaml, err := os.ReadFile("test-data/ipmi.yml")
+		afterUpdateConfigYaml, err := os.ReadFile("ipmi_local.yml")
 		require.NoError(t, err)
 		require.Equal(t, templateConfigYaml, afterUpdateConfigYaml, "UpdateConfigReload fail should keep old file unchanged")
 
@@ -168,7 +295,7 @@ modules:
     - 55
 `,
 		}
-		// blackbox reload 时发生错误
+		// ipmi reload 时发生错误
 		reloadCh := make(chan chan error)
 		go func() {
 			ch := <-reloadCh
@@ -176,11 +303,214 @@ modules:
 		}()
 		err = s.UpdateConfigReload(context.TODO(), cmd, reloadCh)
 		require.Error(t, err, "UpdateConfigReload should return err")
-		require.Equal(t, time.Time{}, s.GetLastUpdateTs(), "GetLastUpdateTs() should not be updated")
+		// 绑定的 zoneId 依然是空，时间戳也是空
+		rt = s.GetRuntimeInfo()
+		require.Equal(t, brand, rt.Brand)
+		require.Equal(t, "", rt.ZoneId)
+		require.Equal(t, time.Time{}, rt.LastUpdateTs)
 
-		afterUpdateConfigYaml, err := os.ReadFile("test-data/ipmi.yml")
+		afterUpdateConfigYaml, err := os.ReadFile("ipmi_local.yml")
 		require.NoError(t, err)
 		require.Equal(t, templateConfigYaml, afterUpdateConfigYaml, "UpdateConfigReload fail should keep old file unchanged")
+	})
+
+}
+
+func Test_sidecarService_ResetConfig(t *testing.T) {
+	testDir := t.TempDir()
+	fmt.Println("test dir:", testDir)
+
+	configFile := filepath.Join(testDir, "ipmi.yml")
+	templateConfigYaml, err := os.ReadFile("ipmi_local.yml")
+	require.NoError(t, err)
+
+	// 准备一下文件
+	err = os.WriteFile(configFile, templateConfigYaml, 0o666)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	s := &sidecarService{
+		logger:     log.NewLogfmtLogger(os.Stdout),
+		configFile: configFile,
+	}
+
+	rt := s.GetRuntimeInfo()
+	require.Equal(t, brand, rt.Brand)
+	require.Equal(t, "", rt.ZoneId)
+	require.Equal(t, time.Time{}, rt.LastUpdateTs)
+
+	t.Run("reset empty", func(t *testing.T) {
+		reloadCh := make(chan chan error)
+		go func() {
+			ch := <-reloadCh
+			ch <- nil
+		}()
+		require.NoError(t, s.ResetConfigReload(context.TODO(), "default", reloadCh))
+
+		rt := s.GetRuntimeInfo()
+		require.Equal(t, brand, rt.Brand)
+		require.Equal(t, "", rt.ZoneId)
+		require.Equal(t, time.Time{}, rt.LastUpdateTs)
+
+		// 配置文件被重置
+		configFileB, err := os.ReadFile(configFile)
+		require.NoError(t, err)
+		require.NotEqual(t, templateConfigYaml, configFileB)
+	})
+
+	t.Run("reset non-empty", func(t *testing.T) {
+		cmd := &UpdateConfigCmd{
+			ZoneId: "default",
+			Yaml: `
+modules:
+  default:
+    user: "default_user"
+    pass: "example_pw"
+    driver: "LAN_2_0"
+    privilege: "user"
+    timeout: 10000
+    collectors:
+    - bmc
+    - ipmi
+    - chassis
+    exclude_sensor_ids:
+    - 2
+    - 29
+    - 32
+    - 50
+    - 52
+    - 55
+`,
+		}
+
+		reloadCh := make(chan chan error)
+		go func() {
+			ch := <-reloadCh
+			ch <- nil
+		}()
+
+		err = s.UpdateConfigReload(context.TODO(), cmd, reloadCh)
+		require.NoError(t, err)
+
+		go func() {
+			ch := <-reloadCh
+			ch <- nil
+		}()
+		require.NoError(t, s.ResetConfigReload(context.TODO(), "default", reloadCh))
+
+		rt := s.GetRuntimeInfo()
+		require.Equal(t, brand, rt.Brand)
+		require.Equal(t, "", rt.ZoneId)
+		require.Equal(t, time.Time{}, rt.LastUpdateTs)
+
+		// 配置文件被重置
+		configFileB, err := os.ReadFile(configFile)
+		require.NoError(t, err)
+		require.NotEqual(t, []byte(cmd.Yaml), configFileB)
+	})
+
+	t.Run("reset zone_id mismatch", func(t *testing.T) {
+		cmd := &UpdateConfigCmd{
+			ZoneId: "default",
+			Yaml: `
+modules:
+  default:
+    user: "default_user"
+    pass: "example_pw"
+    driver: "LAN_2_0"
+    privilege: "user"
+    timeout: 10000
+    collectors:
+    - bmc
+    - ipmi
+    - chassis
+    exclude_sensor_ids:
+    - 2
+    - 29
+    - 32
+    - 50
+    - 52
+    - 55
+`,
+		}
+
+		reloadCh := make(chan chan error)
+		go func() {
+			ch := <-reloadCh
+			ch <- nil
+		}()
+
+		err = s.UpdateConfigReload(context.TODO(), cmd, reloadCh)
+		require.NoError(t, err)
+
+		go func() {
+			ch := <-reloadCh
+			ch <- nil
+		}()
+		require.Error(t, s.ResetConfigReload(context.TODO(), "default2", reloadCh))
+
+		rt := s.GetRuntimeInfo()
+		require.Equal(t, brand, rt.Brand)
+		require.Equal(t, "default", rt.ZoneId)
+		require.NotEqual(t, time.Time{}, rt.LastUpdateTs)
+
+		// 配置文件没有被重置
+		configFileB, err := os.ReadFile(configFile)
+		require.NoError(t, err)
+		require.Equal(t, []byte(cmd.Yaml), configFileB)
+	})
+
+	t.Run("reset reload error", func(t *testing.T) {
+		cmd := &UpdateConfigCmd{
+			ZoneId: "default",
+			Yaml: `
+modules:
+  default:
+    user: "default_user"
+    pass: "example_pw"
+    driver: "LAN_2_0"
+    privilege: "user"
+    timeout: 10000
+    collectors:
+    - bmc
+    - ipmi
+    - chassis
+    exclude_sensor_ids:
+    - 2
+    - 29
+    - 32
+    - 50
+    - 52
+    - 55
+`,
+		}
+
+		reloadCh := make(chan chan error)
+		go func() {
+			ch := <-reloadCh
+			ch <- nil
+		}()
+
+		err = s.UpdateConfigReload(context.TODO(), cmd, reloadCh)
+		require.NoError(t, err)
+
+		go func() {
+			ch := <-reloadCh
+			ch <- errors.New("on purpose")
+		}()
+		require.Error(t, s.ResetConfigReload(context.TODO(), "default", reloadCh))
+
+		rt := s.GetRuntimeInfo()
+		require.Equal(t, brand, rt.Brand)
+		require.Equal(t, "default", rt.ZoneId)
+		require.NotEqual(t, time.Time{}, rt.LastUpdateTs)
+
+		// 配置文件没有被重置
+		configFileB, err := os.ReadFile(configFile)
+		require.NoError(t, err)
+		require.Equal(t, []byte(cmd.Yaml), configFileB)
 	})
 
 }
